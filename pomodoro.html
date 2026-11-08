@@ -533,12 +533,65 @@
   let planned = [];
   let anchor = null;  // 音を予約した時点の、音声の時計と実時間の対応
 
+  /* iPhoneの消音モードでも鳴らす。音を「メディア再生」として扱わせる
+     audioSession は対応するSafari用、無音のループ再生はそれ以前のiOS用 */
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  let silentLoop = null;
+  let sessionReleaseId = null;
+
+  function silentWav() {
+    const samples = 22050; // 1秒ぶんの無音（8bit PCMの無音は128）
+    const bytes = new Uint8Array(44 + samples).fill(128);
+    const view = new DataView(bytes.buffer);
+    const text = (offset, value) => [...value].forEach((c, i) => { bytes[offset + i] = c.charCodeAt(0); });
+    text(0, "RIFF");
+    view.setUint32(4, 36 + samples, true);
+    text(8, "WAVEfmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);        // PCM
+    view.setUint16(22, 1, true);        // モノラル
+    view.setUint32(24, samples, true);  // サンプルレート
+    view.setUint32(28, samples, true);  // バイトレート
+    view.setUint16(32, 1, true);
+    view.setUint16(34, 8, true);
+    text(36, "data");
+    view.setUint32(40, samples, true);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return "data:audio/wav;base64," + btoa(binary);
+  }
+
+  function setSessionType(type) {
+    try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (error) { /* 未対応 */ }
+  }
+
+  function holdSoundSession() {
+    if (!isIOS) return;
+    clearTimeout(sessionReleaseId);
+    setSessionType("playback");
+    if (!silentLoop) {
+      silentLoop = new Audio(silentWav());
+      silentLoop.loop = true;
+    }
+    silentLoop.play().catch(() => {});
+  }
+
+  // 止まっている間は、他のアプリの音楽などを邪魔しないよう元に戻す
+  function releaseSoundSession() {
+    if (!isIOS) return;
+    clearTimeout(sessionReleaseId);
+    if (silentLoop) silentLoop.pause();
+    setSessionType("auto");
+  }
+
   function unlockAudio() {
     // ブラウザの自動再生制限があるため、ボタン操作の中で用意しておく
+    holdSoundSession();
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) return;
     if (!audio) audio = new AudioContextClass();
-    if (audio.state === "suspended") audio.resume();
+    if (audio.state !== "running") audio.resume();
   }
 
   function note(at, frequency, length, volume = 0.5) {
@@ -608,7 +661,7 @@
   // スリープなどで音声の時計と実時間がずれたら、予約をやり直す合図
   function soundsAreLate() {
     if (!audio || !anchor) return false;
-    if (audio.state === "suspended") audio.resume();
+    if (audio.state !== "running") audio.resume();
     return Math.abs((audio.currentTime - anchor.audio) - (Date.now() - anchor.wall) / 1000) > 0.5;
   }
 
@@ -664,6 +717,7 @@
     remaining = Math.max(0, endAt - Date.now());
     state = "paused";
     cancelSounds();
+    releaseSoundSession();
     stopTicking();
     render();
   }
@@ -676,6 +730,8 @@
       cancelSounds();
       chime(audio.currentTime, endingRounds());
     }
+    // 鳴り終えるまでは保ち、そのあと元に戻す
+    sessionReleaseId = setTimeout(releaseSoundSession, endingRounds() * 1100 + 1500);
     stopTicking();
     render();
   }
@@ -685,6 +741,7 @@
     phases = [];
     index = 0;
     cancelSounds();
+    releaseSoundSession();
     stopTicking();
     render();
   }
