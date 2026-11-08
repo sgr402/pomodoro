@@ -644,6 +644,24 @@
     }
   }
 
+  // 停止中のタイマーは途中の状態を取っておき、タブで戻ったら続きから再開できるようにする
+  const shelved = { kitchen: null, training: null };
+
+  function switchTool(tool) {
+    if (state === "running" || tool === settings.tool) return;
+    if (state === "done") backToSetting();
+    shelved[settings.tool] = state === "paused" ? { phases, index, remaining } : null;
+    settings.tool = tool;
+    const back = shelved[tool];
+    shelved[tool] = null;
+    state = back ? "paused" : "idle";
+    phases = back ? back.phases : [];
+    index = back ? back.index : 0;
+    remaining = back ? back.remaining : 0;
+    saveSettings();
+    render();
+  }
+
   function pressStart() {
     if (state === "running") pause();
     else if (state === "done") backToSetting();
@@ -829,7 +847,7 @@
 
     toolTabs.forEach((tab) => {
       tab.setAttribute("aria-pressed", String(tab.dataset.tool === settings.tool));
-      tab.disabled = !idle;
+      tab.disabled = state === "running";
     });
     $("fields").hidden = !training();
     fieldButtons.forEach((button) => {
@@ -887,11 +905,7 @@
     saveSettings();
     render();
   }));
-  toolTabs.forEach((tab) => tab.addEventListener("click", () => {
-    settings.tool = tab.dataset.tool;
-    saveSettings();
-    render();
-  }));
+  toolTabs.forEach((tab) => tab.addEventListener("click", () => switchTool(tab.dataset.tool)));
   fieldButtons.forEach((button) => button.addEventListener("click", () => {
     settings.field = button.dataset.field;
     saveSettings();
