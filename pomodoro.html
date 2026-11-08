@@ -341,6 +341,7 @@
     .desk { width: min(720px, 100%); }
     .fields { grid-template-columns: 1fr 1fr 1.7fr; }
     .rounds { grid-column: auto; }
+    .keys { grid-template-columns: repeat(8, 1fr); }
   }
   @media (max-height: 540px) {
     :root { --digit: min(31vw, 30svh); }
@@ -395,11 +396,15 @@
             <button type="button" id="round-5" data-rounds="5">5</button>
           </div>
         </div>
-        <div class="keys" role="group" aria-label="時間を足す">
+        <div class="keys" role="group" aria-label="時間を増やす・減らす">
           <button type="button" id="add-10m" data-add="600000">+10分</button>
           <button type="button" id="add-1m" data-add="60000">+1分</button>
           <button type="button" id="add-10s" data-add="10000">+10秒</button>
           <button type="button" id="add-1s" data-add="1000">+1秒</button>
+          <button type="button" id="sub-10m" data-add="-600000">−10分</button>
+          <button type="button" id="sub-1m" data-add="-60000">−1分</button>
+          <button type="button" id="sub-10s" data-add="-10000">−10秒</button>
+          <button type="button" id="sub-1s" data-add="-1000">−1秒</button>
         </div>
         <div class="controls">
           <button type="button" id="start">開始</button>
@@ -838,7 +843,9 @@
       button.disabled = !idle;
     });
     const value = settings[fieldName()];
-    keys.forEach((key) => { key.disabled = !idle || value >= MAX_TIME; });
+    keys.forEach((key) => {
+      key.disabled = !idle || (Number(key.dataset.add) > 0 ? value >= MAX_TIME : value <= 0);
+    });
 
     setText($("start"), primaryText());
     $("start").disabled = idle && !canStart();
@@ -876,7 +883,7 @@
   keys.forEach((key) => key.addEventListener("click", () => {
     if (state !== "idle") return;
     const name = fieldName();
-    settings[name] = Math.min(MAX_TIME, settings[name] + Number(key.dataset.add));
+    settings[name] = Math.min(MAX_TIME, Math.max(0, settings[name] + Number(key.dataset.add)));
     saveSettings();
     render();
   }));
