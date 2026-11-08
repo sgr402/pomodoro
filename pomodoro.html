@@ -594,10 +594,10 @@
     if (audio.state !== "running") audio.resume();
   }
 
-  function note(at, frequency, length, volume = 0.5) {
+  function note(at, frequency, length, volume = 0.5, type = "triangle") {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
-    oscillator.type = "triangle";
+    oscillator.type = type;
     oscillator.frequency.value = frequency;
     gain.gain.setValueAtTime(0.0001, at);
     gain.gain.exponentialRampToValueAtTime(volume, at + 0.02);
@@ -608,10 +608,23 @@
     planned.push(oscillator);
   }
 
+  // オルゴールのような音：柔らかい基音に、すぐ消える高い倍音を少し重ねる
+  function bell(at, frequency, length) {
+    note(at, frequency, length, 0.45, "sine");
+    note(at, frequency * 2, length * 0.6, 0.13, "sine");
+    note(at, frequency * 4, length * 0.25, 0.045, "sine");
+  }
+
+  const CHIME_ROUND = 2.6;  // 1回ぶんのメロディの長さ（秒）
+  const CHIME_MELODY = [    // [鳴らす時刻, 高さ, 余韻]（ハ長調で上がって終わる）
+    [0, 523.25, 1.1], [0.16, 659.25, 1.1], [0.32, 783.99, 1.1], [0.48, 1046.5, 1.3],
+    [0.84, 880, 1.1], [1, 1046.5, 1.1], [1.16, 1318.51, 1.4],
+  ];
+
   function chime(at, rounds) {
     for (let round = 0; round < rounds; round++) {
-      [659.25, 783.99, 1046.5].forEach((frequency, step) => {
-        note(at + round * 1.1 + step * 0.22, frequency, 0.8);
+      CHIME_MELODY.forEach(([offset, frequency, length]) => {
+        bell(at + round * CHIME_ROUND + offset, frequency, length);
       });
     }
   }
@@ -626,7 +639,7 @@
     }
   }
 
-  function endingRounds() { return training() ? 3 : 8; }
+  function endingRounds() { return training() ? 2 : 3; }
 
   function cancelSounds() {
     planned.forEach((oscillator) => {
@@ -731,7 +744,7 @@
       chime(audio.currentTime, endingRounds());
     }
     // 鳴り終えるまでは保ち、そのあと元に戻す
-    sessionReleaseId = setTimeout(releaseSoundSession, endingRounds() * 1100 + 1500);
+    sessionReleaseId = setTimeout(releaseSoundSession, endingRounds() * CHIME_ROUND * 1000 + 1500);
     stopTicking();
     render();
   }
