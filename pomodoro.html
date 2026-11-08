@@ -594,13 +594,13 @@
     if (audio.state !== "running") audio.resume();
   }
 
-  function note(at, frequency, length, volume = 0.5, type = "triangle", attack = 0.02) {
+  function note(at, frequency, length, volume = 0.5) {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
-    oscillator.type = type;
+    oscillator.type = "triangle";
     oscillator.frequency.value = frequency;
     gain.gain.setValueAtTime(0.0001, at);
-    gain.gain.exponentialRampToValueAtTime(volume, at + attack);
+    gain.gain.exponentialRampToValueAtTime(volume, at + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + length);
     oscillator.connect(gain).connect(audio.destination);
     oscillator.start(at);
@@ -608,25 +608,103 @@
     planned.push(oscillator);
   }
 
-  // 夜中でも驚かない音：高い音や鋭い立ち上がりを避け、ふわっと入って長く消える
-  function softTone(at, frequency, length, volume) {
-    note(at, frequency, length, volume, "sine", 0.14);
-    note(at, frequency * 2, length * 0.5, volume * 0.12, "sine", 0.14);
+  /* 終了の音楽：弦を弾いた音を合成し（Karplus-Strong法）、部屋の響きを足してゆっくり奏でる */
+  const BEAT = 1.2;  // 1拍の長さ（秒）
+  const MUSIC = [    // [拍, MIDIノート番号, 強さ]（低い弦のあとに旋律が続く）
+    [0, 48, 0.4], [0.5, 55, 0.4], [1, 64, 0.7], [2, 67, 0.7],
+    [3, 45, 0.4], [3.5, 52, 0.4], [4, 60, 0.65], [5, 69, 0.7],
+    [6, 41, 0.4], [6.5, 48, 0.4], [7, 57, 0.65], [8, 65, 0.7],
+    [9, 43, 0.4], [9.5, 50, 0.4], [10, 59, 0.65], [11, 62, 0.65],
+    [12, 48, 0.45], [12.18, 55, 0.45], [12.36, 60, 0.5], [12.54, 64, 0.55], [12.72, 67, 0.55],
+  ];
+  const MUSIC_SECONDS = 12.72 * BEAT + 4;  // 最後の和音の余韻まで
+  const STRING_SECONDS = 4;
+
+  const strings = new Map();
+  let musicBus = null;
+
+  function pluckedString(frequency) {
+    const rate = audio.sampleRate;
+    const found = strings.get(frequency);
+    if (found && found.buffer.sampleRate === rate) return found;
+
+    const period = Math.round(rate / frequency);
+    const length = Math.floor(rate * STRING_SECONDS);
+    const buffer = audio.createBuffer(1, length, rate);
+    const data = buffer.getChannelData(0);
+    // はじめの揺れ：ならしたノイズにすると、爪ではなく指の腹で弾いた音になる
+    let pluck = Array.from({ length: period }, () => Math.random() * 2 - 1);
+    for (let pass = 0; pass < 4; pass++) {
+      pluck = pluck.map((value, i) => (value + pluck[(i + 1) % period]) / 2);
+    }
+    data.set(pluck);
+    for (let i = period; i < length; i++) {
+      const before = i - period - 1 >= 0 ? data[i - period - 1] : data[i - period];
+      data[i] = 0.998 * 0.5 * (data[i - period] + before);
+    }
+    let peak = 0;
+    for (let i = 0; i < length; i++) peak = Math.max(peak, Math.abs(data[i]));
+    const fade = Math.floor(rate * 0.5);
+    for (let i = 0; i < length; i++) {
+      data[i] *= (1 / (peak || 1)) * Math.min(1, (length - i) / fade);
+    }
+    const made = { buffer, period };
+    strings.set(frequency, made);
+    return made;
   }
 
-  const CHIME_ROUND = 4.6;  // 1回ぶんの長さ（秒）
-  const CHIME_MELODY = [    // [鳴らす時刻, 高さ, 余韻]（ゆっくり下がって終わる）
-    [0, 659.25, 2.4], [0.75, 523.25, 2.6], [1.5, 392, 3],
-  ];
-
-  function chime(at, rounds) {
-    for (let round = 0; round < rounds; round++) {
-      // 繰り返すときは、1回目をいちばん小さくして徐々に気づかせる
-      const volume = rounds > 1 && round === 0 ? 0.2 : 0.3;
-      CHIME_MELODY.forEach(([offset, frequency, length]) => {
-        softTone(at + round * CHIME_ROUND + offset, frequency, length, volume);
-      });
+  function roomTail() {
+    const seconds = 2.4;
+    const length = Math.floor(audio.sampleRate * seconds);
+    const buffer = audio.createBuffer(2, length, audio.sampleRate);
+    for (let channel = 0; channel < 2; channel++) {
+      const data = buffer.getChannelData(channel);
+      let last = 0;
+      for (let i = 0; i < length; i++) {
+        last = last * 0.75 + (Math.random() * 2 - 1) * 0.25;  // こもった響きにする
+        data[i] = last * Math.pow(1 - i / length, 3.5);
+      }
     }
+    return buffer;
+  }
+
+  function musicInput() {
+    if (musicBus && musicBus.context === audio) return musicBus.input;
+    const input = audio.createBiquadFilter();
+    input.type = "lowpass";
+    input.frequency.value = 1500;
+    input.Q.value = 0.5;
+    const dry = audio.createGain();
+    dry.gain.value = 0.6;
+    const wet = audio.createGain();
+    wet.gain.value = 0.4;
+    const reverb = audio.createConvolver();
+    reverb.buffer = roomTail();
+    input.connect(dry).connect(audio.destination);
+    input.connect(reverb).connect(wet).connect(audio.destination);
+    musicBus = { context: audio, input };
+    return input;
+  }
+
+  function pluck(at, frequency, volume) {
+    const { buffer, period } = pluckedString(frequency);
+    const source = audio.createBufferSource();
+    const gain = audio.createGain();
+    source.buffer = buffer;
+    source.playbackRate.value = frequency * period / buffer.sampleRate;  // 音程を正確に合わせる
+    gain.gain.setValueAtTime(0, at);
+    gain.gain.linearRampToValueAtTime(volume, at + 0.012);
+    source.connect(gain).connect(musicInput());
+    source.start(at);
+    planned.push(source);
+  }
+
+  function chime(at) {
+    MUSIC.forEach(([beat, midi, strength]) => {
+      const human = Math.random() * 0.04;              // 人が弾くような、わずかな揺らぎ
+      const touch = strength * (0.9 + Math.random() * 0.2);
+      pluck(at + 0.05 + beat * BEAT + human, 440 * Math.pow(2, (midi - 69) / 12), touch);
+    });
   }
 
   function phaseCue(kind, at) {
@@ -638,8 +716,6 @@
       note(at + 0.25, 523.25, 0.8);
     }
   }
-
-  function endingRounds() { return training() ? 1 : 2; }
 
   function cancelSounds() {
     planned.forEach((oscillator) => {
@@ -667,7 +743,7 @@
       }
       const next = phases[i + 1];
       if (next) phaseCue(next.kind, base + end);
-      else chime(base + end, endingRounds());
+      else chime(base + end);
     }
   }
 
@@ -741,10 +817,10 @@
     remaining = 0;
     if (late && audio) {
       cancelSounds();
-      chime(audio.currentTime, endingRounds());
+      chime(audio.currentTime);
     }
     // 鳴り終えるまでは保ち、そのあと元に戻す
-    sessionReleaseId = setTimeout(releaseSoundSession, endingRounds() * CHIME_ROUND * 1000 + 1500);
+    sessionReleaseId = setTimeout(releaseSoundSession, MUSIC_SECONDS * 1000 + 1500);
     stopTicking();
     render();
   }
