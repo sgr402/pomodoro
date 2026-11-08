@@ -87,7 +87,57 @@
     margin-left: -1.5px;
     background-color: var(--incense);
     transition: background-color var(--fade);
+    z-index: 1; /* 火を指でつかめるよう、文字の層より手前に置く */
   }
+  /* 火のまわりの、指でつかむ場所 */
+  #grip {
+    display: none;
+    position: absolute;
+    top: -26px;
+    left: -26px;
+    width: 55px;
+    min-height: 0;
+    height: 56px;
+    padding: 0;
+    border: 0;
+    background: none;
+    border-radius: 50%;
+    cursor: grab;
+    touch-action: none;
+    transition: none;
+  }
+  #grip:hover:not(:disabled) { background: none; }
+  body[data-state="running"] #grip,
+  body[data-state="paused"] #grip { display: block; }
+  #grip::before {
+    content: "";
+    position: absolute;
+    inset: 9px;
+    border: 1px solid color-mix(in srgb, var(--ink) 50%, transparent);
+    border-radius: 50%;
+    transition: opacity 1.6s ease;
+  }
+  #grip::after { /* 下に引けることを示す印 */
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 1px;
+    width: 7px;
+    height: 7px;
+    margin-left: -4px;
+    border-right: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    transform: rotate(45deg);
+    opacity: 0.7;
+    transition: opacity 1.6s ease;
+  }
+  #grip.held { cursor: grabbing; }
+  #grip.held::before {
+    border-color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--ink);
+  }
+  body.quiet #grip:not(.held)::before,
+  body.quiet #grip:not(.held)::after { opacity: 0.3; }
   #ember {
     position: absolute;
     top: -2px;
@@ -355,13 +405,16 @@
   @media (prefers-reduced-motion: reduce) {
     :root { --fade: 0.01s linear; }
     body[data-state="running"] #ember { animation: none; }
-    #ember, .status, .tabs, .panel, button { transition: none; }
+    #ember, .status, .tabs, .panel, button, #grip::before, #grip::after { transition: none; }
   }
 </style>
 </head>
 <body data-tool="kitchen" data-mode="work" data-state="idle">
   <canvas id="smoke" aria-hidden="true"></canvas>
-  <div class="stick" aria-hidden="true"><div id="ember"></div></div>
+  <div class="stick">
+    <div id="ember" aria-hidden="true"></div>
+    <button type="button" id="grip" aria-label="火を下に引いて早送り（下矢印キーで10秒進む）"></button>
+  </div>
   <svg class="mound" viewBox="0 0 260 16" preserveAspectRatio="none" aria-hidden="true">
     <path d="M0 16C60 13 104 1 130 0C156 1 200 13 260 16Z"/>
   </svg>
@@ -574,6 +627,7 @@
       moved = true;
     }
     remaining = endAt - now;
+    if (moved) dropDrag();
     if (late) {
       scheduleSounds();
       if (moved) phaseCue(phases[index].kind, audio.currentTime);
@@ -615,6 +669,7 @@
   }
 
   function finish(late) {
+    dropDrag();
     state = "done";
     remaining = 0;
     if (late && audio) {
@@ -667,6 +722,82 @@
     else if (state === "done") backToSetting();
     else start();
   }
+
+  /* ---- 火を下に引いて早送りする ---- */
+  const DRAG_DEAD_ZONE = 6;   // 触れただけで時間が進まないよう、この距離までは動かさない
+  const PHASE_END_MARGIN = 500;
+  const KEY_SKIP = 10 * 1000;
+  const grip = $("grip");
+  let drag = null;       // つかんでいる間の { id, y, msPerPx, skip }。離すまで時間には反映しない
+  let stickRoom = 1;     // 線香が最長のときの長さ（px）
+
+  function dropDrag() {
+    if (!drag) return;
+    if (grip.hasPointerCapture(drag.id)) grip.releasePointerCapture(drag.id);
+    drag = null;
+    grip.classList.remove("held");
+  }
+
+  // 今の区間を終わらせて次へ進む。最後の区間なら完了にする
+  function endPhase() {
+    if (index === phases.length - 1) {
+      finish(true);
+      return;
+    }
+    index++;
+    remaining = phases[index].ms;
+    if (state === "running") {
+      endAt = Date.now() + remaining;
+      scheduleSounds();
+      if (audio) phaseCue(phases[index].kind, audio.currentTime);
+    }
+  }
+
+  function commitSkip(skip) {
+    if (skip <= 0 || (state !== "running" && state !== "paused")) return;
+    const left = (state === "running" ? endAt - Date.now() : remaining) - skip;
+    if (left < PHASE_END_MARGIN) {
+      endPhase();
+    } else if (state === "running") {
+      endAt -= skip;
+      remaining = left;
+      scheduleSounds();
+    } else {
+      remaining = left;
+    }
+    render();
+  }
+
+  grip.addEventListener("pointerdown", (event) => {
+    if (state !== "running" && state !== "paused") return;
+    event.preventDefault();
+    const scale = training() ? phases[index].ms : MAX_TIME;
+    drag = { id: event.pointerId, y: event.clientY, msPerPx: scale / stickRoom, skip: 0 };
+    grip.setPointerCapture(event.pointerId);
+    grip.classList.add("held");
+  });
+  grip.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const pulled = event.clientY - drag.y - DRAG_DEAD_ZONE;
+    drag.skip = Math.max(0, pulled) * drag.msPerPx;
+    render();
+  });
+  grip.addEventListener("pointerup", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const skip = drag.skip;
+    dropDrag();
+    commitSkip(skip);
+    render();
+  });
+  grip.addEventListener("pointercancel", () => {
+    dropDrag();
+    render();
+  });
+  grip.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown") return;
+    event.preventDefault();
+    commitSkip(KEY_SKIP);
+  });
 
   /* ---- 画面を消さない（使えない環境では何もしない） ---- */
   let screenLock = null;
@@ -795,9 +926,10 @@
   }
 
   function statusText() {
+    if (drag && drag.skip > 0) return `${formatTime(Math.min(drag.skip, remaining))}​早送り`;
     if (state === "done") return training() ? "おつかれ​さまでした" : "止めるで​設定に戻ります";
     if (state === "paused") return "停止しています";
-    if (state === "running") return training() ? nextText() : "終わると​音が鳴ります";
+    if (state === "running") return training() ? nextText() : "火を下に引くと​早送りできます";
     if (!canStart()) return training() ? "各回の時間を​入れてください" : "時間を​入れてください";
     if (training()) return `準備10秒​込みで​合計${formatTime(totalTime())}`;
     return settings.kitchen === MAX_TIME ? "上限の25分です" : "25分まで​設定できます";
@@ -817,7 +949,7 @@
   function render() {
     const body = document.body;
     const idle = state === "idle";
-    const shown = idle ? settings[fieldName()] : remaining;
+    const shown = idle ? settings[fieldName()] : Math.max(0, remaining - (drag ? drag.skip : 0));
     const text = formatTime(shown);
     [...text].forEach((character, position) => setText(digits[position], character));
 
@@ -832,7 +964,7 @@
     const scale = !idle && training() && phase ? phase.ms : MAX_TIME;
     body.style.setProperty("--left", Math.min(1, shown / scale));
     if (phase && look === "work" && state !== "done") {
-      body.style.setProperty("--ground", duskColor(1 - remaining / phase.ms));
+      body.style.setProperty("--ground", duskColor(1 - shown / phase.ms));
     } else {
       body.style.removeProperty("--ground");
     }
@@ -884,8 +1016,11 @@
     const root = document.documentElement.style;
     const room = $("room").offsetHeight;
     const foot = $("panel").offsetHeight;
+    const top = Math.max(window.innerHeight * 0.12, 76);
+    root.setProperty("--top", top + "px");
     root.setProperty("--foot", foot + "px");
     root.setProperty("--room", room + "px");
+    stickRoom = Math.max(1, room - top - foot - 16);
     const size = `${smoke.clientWidth}x${smoke.clientHeight}`;
     if (size !== roomSize) {
       roomSize = size;
