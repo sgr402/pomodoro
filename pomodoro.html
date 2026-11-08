@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>線香タイマー</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;500&display=swap">
+<style>
+  /* 線香を軸に分と秒を置き、下の帯で台所のタイマーのように時間を足していく */
+  :root {
+    color-scheme: dark;
+    --ground: #4f6367;  /* 青鈍：スクリプトが燃えた分だけ暗くする */
+    --ink: #ebe6d6;     /* 胡粉 */
+    --incense: #b9a77f; /* 白檀 */
+    --ember: #ff8a4a;   /* 火 */
+    --ash: rgba(235, 230, 214, 0.24);
+    --smoke: #dfe3da;
+
+    --digit: min(31vw, 40svh);
+    --axis-gap: calc(var(--digit) * 0.46);  /* 線香が立つ、分と秒の間 */
+    --top: max(12svh, 76px);                /* 燃え始めの線香の先 */
+    --foot: 150px;                          /* 下の帯の高さ（スクリプトが実測する） */
+    --room: 100svh;                         /* 画面の高さ（スクリプトが実測する） */
+    --mound: 16px;
+    --base: calc(var(--foot) + var(--mound));
+    --left: 1;                              /* 線香の残り */
+    --fade: 2.4s ease;
+  }
+  body[data-mode="rest"] {
+    color-scheme: light;
+    --ground: #c8d5ca;  /* 青磁：窓を開ける */
+    --ink: #22302e;
+    --incense: #84724a;
+    --ember: #e2591a;
+    --ash: rgba(34, 48, 46, 0.18);
+    --smoke: #4c5f5c;
+  }
+  body[data-mode="prep"] {
+    color-scheme: light;
+    --ground: #d6bd86;  /* 刈安を薄めた色：火をつける前 */
+    --ink: #2b2415;
+    --incense: #6e5a2e;
+    --ember: #d2500f;
+    --ash: rgba(43, 36, 21, 0.2);
+    --smoke: #5a4c2c;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { height: 100%; }
+  body {
+    position: relative;
+    display: flex;
+    margin: 0;
+    min-height: 100%;
+    overflow-x: hidden;
+    background-color: var(--ground);
+    color: var(--ink);
+    font-family: "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", serif;
+    font-weight: 500;
+    line-height: 1.7;
+    transition: background-color var(--fade), color var(--fade);
+  }
+
+  /* ---- 線香と煙（画面中央の軸） ---- */
+  #smoke {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: min(520px, 90vw);
+    height: 100%;
+    transform: translateX(-50%);
+    color: var(--smoke);
+    filter: blur(0.7px);
+    transition: color var(--fade);
+    pointer-events: none;
+  }
+  .stick {
+    position: absolute;
+    left: 50%;
+    bottom: var(--base);
+    width: 3px;
+    height: max(0px, calc((var(--room) - var(--top) - var(--base)) * var(--left)));
+    margin-left: -1.5px;
+    background-color: var(--incense);
+    transition: background-color var(--fade);
+  }
+  #ember {
+    position: absolute;
+    top: -2px;
+    left: -1px;
+    width: 5px;
+    height: 8px;
+    border-radius: 40%;
+    background-color: var(--ember);
+    box-shadow: 0 0 10px 2px var(--ember), 0 0 34px 8px color-mix(in srgb, var(--ember) 34%, transparent);
+    opacity: 0;
+    transition: opacity 1.4s ease;
+  }
+  #ember::before { /* 火の上に残る、落ちる前の灰 */
+    content: "";
+    position: absolute;
+    left: 1px;
+    bottom: 100%;
+    width: 3px;
+    height: 11px;
+    border-radius: 2px 2px 0 0;
+    background-color: var(--ink);
+    opacity: 0.55;
+  }
+  body[data-state="running"] #ember {
+    opacity: 1;
+    animation: breathe 7s ease-in-out infinite;
+  }
+  body[data-state="paused"] #ember {
+    opacity: 0.32;
+  }
+  @keyframes breathe {
+    50% { opacity: 0.68; }
+  }
+  .mound {
+    position: absolute;
+    left: 50%;
+    bottom: var(--foot);
+    width: clamp(150px, 26vw, 260px);
+    height: var(--mound);
+    transform: translateX(-50%);
+    fill: var(--ash);
+    transition: fill var(--fade);
+  }
+
+  /* ---- 全体の並び ---- */
+  main {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+  }
+
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    padding-block: 14px 0;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    transition: opacity 1.6s ease;
+  }
+  .tabs button {
+    min-height: 44px;
+    padding: 4px 14px;
+    border-color: transparent;
+    font-size: 15px;
+    letter-spacing: 0.12em;
+    text-indent: 0.12em;
+  }
+  .tabs button[aria-pressed="true"] {
+    border-color: transparent;
+    border-bottom-color: var(--ink);
+    opacity: 1;
+  }
+
+  .face {
+    align-self: center;
+    padding-block: var(--mound);
+  }
+  .clock {
+    display: flex;
+    justify-content: center;
+    font-size: var(--digit);
+    font-weight: 400;
+    line-height: 1;
+  }
+  /* 数字の幅を固定し、1秒ごとに全体が揺れないようにする */
+  .clock span {
+    width: 0.585em;
+    text-align: center;
+  }
+  /* コロンは読み上げ用に残し、線香をその代わりに見せる */
+  .clock .colon {
+    width: var(--axis-gap);
+    color: transparent;
+  }
+  .caption {
+    display: grid;
+    grid-template-columns: 1fr var(--axis-gap) 1fr;
+    align-items: baseline;
+    width: min(calc(var(--digit) * 2.8), 100%);
+    margin: clamp(0px, 1svh, 12px) auto 0;
+  }
+  h1 {
+    grid-column: 1;
+    margin: 0;
+    font-size: clamp(18px, 3svh, 26px);
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0.2em;
+    margin-right: -0.2em; /* 最後の字のあとの字間を打ち消す */
+    text-align: right;
+    white-space: nowrap;
+  }
+  .status {
+    grid-column: 3;
+    min-width: 0;
+    margin: 0;
+    font-size: clamp(14px, 2.2svh, 17px);
+    line-height: 1.5;
+    word-break: keep-all; /* 文中の区切りの位置でだけ折り返す */
+    transition: opacity 1.6s ease;
+  }
+
+  /* ---- 下の帯 ---- */
+  .panel {
+    position: relative;
+    padding-block: 0 clamp(14px, 2.4svh, 24px);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    transition: opacity 1.6s ease;
+  }
+  .desk {
+    display: grid;
+    gap: 8px;
+    width: min(540px, 100%);
+    margin-inline: auto;
+  }
+  .fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .field {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 12px;
+    letter-spacing: 0.06em;
+    text-indent: 0;
+  }
+  .field small { font-size: 14px; }
+  .field b {
+    font-size: 21px;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  .field[aria-pressed="true"] {
+    border-color: var(--ink);
+    box-shadow: inset 0 0 0 1px var(--ink);
+  }
+  .rounds {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rounds > span {
+    flex: none;
+    padding-inline: 4px 8px;
+    font-size: 14px;
+    letter-spacing: 0.06em;
+  }
+  .rounds button {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    padding: 2px;
+    letter-spacing: 0;
+    text-indent: 0;
+    font-size: 17px;
+  }
+  .rounds button[aria-pressed="true"] {
+    border-color: var(--ink);
+    background-color: color-mix(in srgb, var(--ink) 22%, transparent);
+    box-shadow: inset 0 0 0 1px var(--ink);
+  }
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .keys button {
+    min-width: 0;
+    padding: 4px 2px;
+    letter-spacing: 0.04em;
+    text-indent: 0.04em;
+  }
+  .controls {
+    display: flex;
+    gap: 8px;
+  }
+  #start { flex: 2; min-height: 54px; font-size: 18px; }
+  #clear { flex: 1; min-height: 54px; }
+
+  button {
+    min-width: 0;
+    min-height: 48px;
+    padding: 6px 12px;
+    border: 1px solid color-mix(in srgb, var(--ink) 55%, transparent);
+    border-radius: 2px;
+    background-color: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 16px;
+    letter-spacing: 0.24em;
+    text-indent: 0.24em; /* 字間ぶんのずれを打ち消して中央に揃える */
+    cursor: pointer;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    touch-action: manipulation; /* 連打でダブルタップ拡大にならないように */
+  }
+  button:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--ink) 16%, transparent);
+  }
+  #start:not(:disabled) {
+    border-color: var(--ink);
+    background-color: var(--ink);
+    color: var(--ground);
+  }
+  #start:hover:not(:disabled) {
+    background-color: color-mix(in srgb, var(--ink) 84%, var(--ground));
+  }
+  button:disabled {
+    border-color: transparent;
+    opacity: 0.42;
+    cursor: default;
+  }
+  button:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 3px;
+  }
+
+  /* 操作がしばらくないときは、時間と煙だけを残す */
+  body.quiet[data-tool="kitchen"] .status { opacity: 0; }
+  body.quiet .tabs:not(:has(:focus-visible)),
+  body.quiet .panel:not(:has(:focus-visible)) { opacity: 0.16; }
+
+  @media (min-width: 720px) {
+    .desk { width: min(720px, 100%); }
+    .fields { grid-template-columns: 1fr 1fr 1.7fr; }
+    .rounds { grid-column: auto; }
+  }
+  @media (max-height: 540px) {
+    :root { --digit: min(31vw, 30svh); }
+    .tabs { padding-block: 6px 0; }
+    .face { padding-block: 4px; }
+    .desk { gap: 6px; }
+    button, .rounds button { min-height: 40px; }
+    #start, #clear { min-height: 44px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root { --fade: 0.01s linear; }
+    body[data-state="running"] #ember { animation: none; }
+    #ember, .status, .tabs, .panel, button { transition: none; }
+  }
+</style>
+</head>
+<body data-tool="kitchen" data-mode="work" data-state="idle">
+  <canvas id="smoke" aria-hidden="true"></canvas>
+  <div class="stick" aria-hidden="true"><div id="ember"></div></div>
+  <svg class="mound" viewBox="0 0 260 16" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M0 16C60 13 104 1 130 0C156 1 200 13 260 16Z"/>
+  </svg>
+
+  <main id="room">
+    <div class="tabs" role="group" aria-label="モード">
+      <button type="button" id="tool-kitchen" data-tool="kitchen">キッチンタイマー</button>
+      <button type="button" id="tool-training" data-tool="training">トレーニング</button>
+    </div>
+
+    <div class="face">
+      <div class="clock" id="clock" role="timer" aria-label="残り時間">
+        <span>0</span><span>3</span><span class="colon">:</span><span>0</span><span>0</span>
+      </div>
+      <div class="caption">
+        <h1 id="mode">タイマー</h1>
+        <p class="status" id="status" aria-live="polite"></p>
+      </div>
+    </div>
+
+    <div class="panel" id="panel">
+      <div class="desk">
+        <div class="fields" id="fields" hidden>
+          <button type="button" class="field" id="field-work" data-field="work"><small>各回</small><b id="value-work">01:00</b></button>
+          <button type="button" class="field" id="field-rest" data-field="rest"><small>休憩</small><b id="value-rest">00:30</b></button>
+          <div class="rounds" role="group" aria-label="繰り返す回数">
+            <span>回数</span>
+            <button type="button" id="round-1" data-rounds="1">1</button>
+            <button type="button" id="round-2" data-rounds="2">2</button>
+            <button type="button" id="round-3" data-rounds="3">3</button>
+            <button type="button" id="round-4" data-rounds="4">4</button>
+            <button type="button" id="round-5" data-rounds="5">5</button>
+          </div>
+        </div>
+        <div class="keys" role="group" aria-label="時間を足す">
+          <button type="button" id="add-10m" data-add="600000">+10分</button>
+          <button type="button" id="add-1m" data-add="60000">+1分</button>
+          <button type="button" id="add-10s" data-add="10000">+10秒</button>
+          <button type="button" id="add-1s" data-add="1000">+1秒</button>
+        </div>
+        <div class="controls">
+          <button type="button" id="start">開始</button>
+          <button type="button" id="clear">クリア</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<script>
+  const MAX_TIME = 25 * 60 * 1000;
+  const PREP_TIME = 10 * 1000;
+  const MAX_ROUNDS = 5;
+  const STORE_KEY = "senko-timer";
+  // 集中するほど部屋が暗く沈んでいく
+  const DUSK = [[79, 99, 103], [44, 58, 62]];
+  const QUIET_AFTER = 5000;
+
+  const $ = (id) => document.getElementById(id);
+  const digits = $("clock").querySelectorAll("span");
+  const keys = document.querySelectorAll("[data-add]");
+  const toolTabs = document.querySelectorAll("[data-tool]:not(body)");
+  const fieldButtons = document.querySelectorAll("[data-field]");
+  const roundButtons = document.querySelectorAll("[data-rounds]");
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- 設定（前回の値を覚えておく） ---- */
+  const settings = { tool: "kitchen", field: "work", kitchen: 3 * 60 * 1000, work: 60 * 1000, rest: 30 * 1000, rounds: 3 };
+
+  function isTime(value) {
+    return Number.isInteger(value) && value >= 0 && value <= MAX_TIME && value % 1000 === 0;
+  }
+
+  function loadSettings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORE_KEY)) || {};
+      if (saved.tool === "kitchen" || saved.tool === "training") settings.tool = saved.tool;
+      if (saved.field === "work" || saved.field === "rest") settings.field = saved.field;
+      ["kitchen", "work", "rest"].forEach((name) => { if (isTime(saved[name])) settings[name] = saved[name]; });
+      if (Number.isInteger(saved.rounds) && saved.rounds >= 1 && saved.rounds <= MAX_ROUNDS) settings.rounds = saved.rounds;
+    } catch (error) { /* 保存が使えない環境では初期値のまま動かす */ }
+  }
+
+  function saveSettings() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (error) { /* 同上 */ }
+  }
+
+  const training = () => settings.tool === "training";
+  const fieldName = () => training() ? settings.field : "kitchen";
+  const canStart = () => (training() ? settings.work : settings.kitchen) > 0;
+
+  /* ---- 流れ ---- */
+  let state = "idle";   // idle / running / paused / done
+  let phases = [];
+  let index = 0;
+  let remaining = 0;
+  let endAt = 0;
+  let timerId = null;
+
+  function buildPhases() {
+    if (!training()) return [{ kind: "kitchen", ms: settings.kitchen }];
+    // 休憩は回と回の間だけ。最後の回のあとには入れない
+    const list = [{ kind: "prep", ms: PREP_TIME }];
+    for (let round = 1; round <= settings.rounds; round++) {
+      list.push({ kind: "work", ms: settings.work, round });
+      if (round < settings.rounds && settings.rest > 0) list.push({ kind: "rest", ms: settings.rest, round });
+    }
+    return list;
+  }
+
+  /* ---- 音 ---- */
+  let audio = null;
+  let planned = [];
+  let anchor = null;  // 音を予約した時点の、音声の時計と実時間の対応
+
+  function unlockAudio() {
+    // ブラウザの自動再生制限があるため、ボタン操作の中で用意しておく
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    if (!audio) audio = new AudioContextClass();
+    if (audio.state === "suspended") audio.resume();
+  }
+
+  function note(at, frequency, length, volume = 0.5) {
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.type = "triangle";
+    oscillator.frequency.value = frequency;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(volume, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + length);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start(at);
+    oscillator.stop(at + length + 0.05);
+    planned.push(oscillator);
+  }
+
+  function chime(at, rounds) {
+    for (let round = 0; round < rounds; round++) {
+      [659.25, 783.99, 1046.5].forEach((frequency, step) => {
+        note(at + round * 1.1 + step * 0.22, frequency, 0.8);
+      });
+    }
+  }
+
+  function phaseCue(kind, at) {
+    if (kind === "work") {
+      note(at, 1046.5, 0.8);
+      note(at, 1568, 0.8, 0.25);
+    } else if (kind === "rest") {
+      note(at, 659.25, 0.5);
+      note(at + 0.25, 523.25, 0.8);
+    }
+  }
+
+  function endingRounds() { return training() ? 3 : 8; }
+
+  function cancelSounds() {
+    planned.forEach((oscillator) => {
+      try { oscillator.stop(); oscillator.disconnect(); } catch (error) { /* 鳴り終えたもの */ }
+    });
+    planned = [];
+  }
+
+  // 全部の音を先に予約する。裏のタブでタイマーが間引かれても音はずれない
+  function scheduleSounds() {
+    if (!audio) return;
+    cancelSounds();
+    const wall = Date.now();
+    const base = audio.currentTime;
+    anchor = { audio: base, wall };
+    let end = Math.max(0, (endAt - wall) / 1000);
+    for (let i = index; i < phases.length; i++) {
+      const span = phases[i].ms / 1000;
+      if (i > index) end += span;
+      if (training()) {
+        for (let count = 1; count <= 3; count++) {
+          const offset = end - count;
+          if (count < span && offset > 0.02) note(base + offset, 880, 0.14, 0.45);
+        }
+      }
+      const next = phases[i + 1];
+      if (next) phaseCue(next.kind, base + end);
+      else chime(base + end, endingRounds());
+    }
+  }
+
+  // スリープなどで音声の時計と実時間がずれたら、予約をやり直す合図
+  function soundsAreLate() {
+    if (!audio || !anchor) return false;
+    if (audio.state === "suspended") audio.resume();
+    return Math.abs((audio.currentTime - anchor.audio) - (Date.now() - anchor.wall) / 1000) > 0.5;
+  }
+
+  /* ---- タイマー ---- */
+  function tick() {
+    const now = Date.now();
+    const late = soundsAreLate();
+    let moved = false;
+    while (now >= endAt) {
+      if (index === phases.length - 1) {
+        finish(late);
+        return;
+      }
+      index++;
+      endAt += phases[index].ms;
+      moved = true;
+    }
+    remaining = endAt - now;
+    if (late) {
+      scheduleSounds();
+      if (moved) phaseCue(phases[index].kind, audio.currentTime);
+    }
+    render();
+  }
+
+  function stopTicking() {
+    clearInterval(timerId);
+    releaseScreen();
+    wake();
+  }
+
+  function start() {
+    if (state === "running") return;
+    unlockAudio();
+    if (state === "idle") {
+      phases = buildPhases();
+      index = 0;
+      remaining = phases[0].ms;
+    }
+    state = "running";
+    endAt = Date.now() + remaining;
+    scheduleSounds();
+    // 時刻の差から残りを計算するので、間隔が間引かれても時間はずれない
+    timerId = setInterval(tick, 250);
+    holdScreen();
+    render();
+    wake();
+    startSmoke();
+  }
+
+  function pause() {
+    remaining = Math.max(0, endAt - Date.now());
+    state = "paused";
+    cancelSounds();
+    stopTicking();
+    render();
+  }
+
+  function finish(late) {
+    state = "done";
+    remaining = 0;
+    if (late && audio) {
+      cancelSounds();
+      chime(audio.currentTime, endingRounds());
+    }
+    stopTicking();
+    render();
+  }
+
+  function backToSetting() {
+    state = "idle";
+    phases = [];
+    index = 0;
+    cancelSounds();
+    stopTicking();
+    render();
+  }
+
+  function clearOrReset() {
+    if (state === "idle") {
+      settings[fieldName()] = 0;
+      saveSettings();
+      render();
+    } else if (state !== "running") {
+      backToSetting();
+    }
+  }
+
+  function pressStart() {
+    if (state === "running") pause();
+    else if (state === "done") backToSetting();
+    else start();
+  }
+
+  /* ---- 画面を消さない（使えない環境では何もしない） ---- */
+  let screenLock = null;
+
+  async function holdScreen() {
+    if (screenLock || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+    try {
+      screenLock = await navigator.wakeLock.request("screen");
+      screenLock.addEventListener("release", () => { screenLock = null; });
+      if (state !== "running") releaseScreen();
+    } catch (error) { screenLock = null; }
+  }
+
+  function releaseScreen() {
+    if (screenLock) screenLock.release().catch(() => {});
+  }
+
+  /* ---- 操作がないときに静かにする ---- */
+  let quietId = null;
+
+  function wake() {
+    document.body.classList.remove("quiet");
+    clearTimeout(quietId);
+    if (state === "running") quietId = setTimeout(() => document.body.classList.add("quiet"), QUIET_AFTER);
+  }
+
+  /* ---- 煙 ---- */
+  const smoke = $("smoke");
+  const smokeContext = smoke.getContext("2d");
+  let smokeLevel = 0;   // 0で消えている、1で立ちのぼりきった状態
+  let smokeFrame = null;
+
+  function sizeSmoke() {
+    const scale = Math.min(window.devicePixelRatio || 1, 2);
+    smoke.width = smoke.clientWidth * scale;
+    smoke.height = smoke.clientHeight * scale;
+    smokeContext.setTransform(scale, 0, 0, scale, 0, 0);
+  }
+
+  function drawSmoke(seconds) {
+    const width = smoke.clientWidth;
+    const height = smoke.clientHeight;
+    smokeContext.clearRect(0, 0, width, height);
+    if (smokeLevel < 0.01) return;
+
+    const originY = $("ember").getBoundingClientRect().top - smoke.getBoundingClientRect().top - 12;
+    const reach = height * 0.92;
+    smokeContext.strokeStyle = getComputedStyle(smoke).color;
+    smokeContext.lineCap = "butt"; // 丸端だと半透明の線のつなぎ目が粒に見える
+
+    // 火の近くはまっすぐ、上へ行くほど揺れて、筋が分かれて薄くなる
+    const pointAt = (distance, strand) => {
+      const rise = distance / reach;
+      const amplitude = Math.min(width * 0.2, 150) * Math.pow(rise, 1.5);
+      const y = originY - distance;
+      const x = width / 2 + amplitude * (
+        Math.sin(y * 0.014 + seconds * 0.5 + strand * rise * 2.2) +
+        0.45 * Math.sin(y * 0.037 - seconds * 0.7 + strand * 1.3)
+      );
+      return [x, y];
+    };
+
+    for (let strand = 0; strand < 3; strand++) {
+      let previous = pointAt(0, strand);
+      for (let distance = 7; distance < reach * smokeLevel; distance += 7) {
+        const point = pointAt(distance, strand);
+        const rise = distance / reach;
+        smokeContext.globalAlpha = 0.46 * Math.pow(1 - rise, 1.25) * Math.min(1, smokeLevel * 2);
+        smokeContext.lineWidth = 0.9 + rise * 2.6;
+        smokeContext.beginPath();
+        smokeContext.moveTo(previous[0], previous[1]);
+        smokeContext.lineTo(point[0], point[1]);
+        smokeContext.stroke();
+        previous = point;
+      }
+    }
+    smokeContext.globalAlpha = 1;
+  }
+
+  function animateSmoke(now) {
+    const burning = state === "running";
+    smokeLevel += burning ? (1 - smokeLevel) * 0.012 : -smokeLevel * 0.05;
+    drawSmoke(now / 1000);
+    smokeFrame = burning || smokeLevel > 0.01 ? requestAnimationFrame(animateSmoke) : null;
+  }
+
+  function startSmoke() {
+    if (!reducedMotion && smokeFrame === null) smokeFrame = requestAnimationFrame(animateSmoke);
+  }
+
+  /* ---- 表示 ---- */
+  function formatTime(ms) {
+    const seconds = Math.ceil(ms / 1000);
+    return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
+  }
+
+  function duskColor(progress) {
+    const ratio = Math.min(1, Math.max(0, progress));
+    const channels = DUSK[0].map((value, channel) =>
+      Math.round(value + (DUSK[1][channel] - value) * ratio));
+    return `rgb(${channels.join(",")})`;
+  }
+
+  function labelText() {
+    if (state === "idle") {
+      if (!training()) return "タイマー";
+      return settings.field === "work" ? "各回" : "休憩";
+    }
+    if (state === "done") return training() ? "完了" : "時間です";
+    const phase = phases[index];
+    if (phase.kind === "kitchen") return "タイマー";
+    if (phase.kind === "prep") return "準備";
+    if (phase.kind === "rest") return "休憩";
+    return `第${phase.round}回`;
+  }
+
+  function nextText() {
+    const next = phases[index + 1];
+    if (!next) return "最後の回です";
+    if (next.kind === "rest") return "次は休憩";
+    return `次は第${next.round}回`;
+  }
+
+  function totalTime() {
+    return buildPhases().reduce((sum, phase) => sum + phase.ms, 0);
+  }
+
+  function statusText() {
+    if (state === "done") return training() ? "おつかれ​さまでした" : "止めるで​設定に戻ります";
+    if (state === "paused") return "停止しています";
+    if (state === "running") return training() ? nextText() : "終わると​音が鳴ります";
+    if (!canStart()) return training() ? "各回の時間を​入れてください" : "時間を​入れてください";
+    if (training()) return `準備10秒​込みで​合計${formatTime(totalTime())}`;
+    return settings.kitchen === MAX_TIME ? "上限の25分です" : "25分まで​設定できます";
+  }
+
+  function primaryText() {
+    if (state === "running") return "停止";
+    if (state === "paused") return "再開";
+    if (state === "done") return "止める";
+    return "開始";
+  }
+
+  function setText(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+  }
+
+  function render() {
+    const body = document.body;
+    const idle = state === "idle";
+    const shown = idle ? settings[fieldName()] : remaining;
+    const text = formatTime(shown);
+    [...text].forEach((character, position) => setText(digits[position], character));
+
+    const phase = phases[index];
+    let look = "work";
+    if (state === "done") look = "rest";
+    else if (idle && training() && settings.field === "rest") look = "rest";
+    else if (phase && phase.kind === "prep") look = "prep";
+    else if (phase && phase.kind === "rest") look = "rest";
+
+    // キッチンタイマーの線香は25分を1とする長さ。トレーニングは区間ごとに1本
+    const scale = !idle && training() && phase ? phase.ms : MAX_TIME;
+    body.style.setProperty("--left", Math.min(1, shown / scale));
+    if (phase && look === "work" && state !== "done") {
+      body.style.setProperty("--ground", duskColor(1 - remaining / phase.ms));
+    } else {
+      body.style.removeProperty("--ground");
+    }
+    body.dataset.tool = settings.tool;
+    body.dataset.mode = look;
+    body.dataset.state = state;
+
+    const label = labelText();
+    setText($("mode"), label);
+    setText($("status"), statusText());
+    document.title = idle ? "線香タイマー" : `${text} ${label}`;
+
+    toolTabs.forEach((tab) => {
+      tab.setAttribute("aria-pressed", String(tab.dataset.tool === settings.tool));
+      tab.disabled = !idle;
+    });
+    $("fields").hidden = !training();
+    fieldButtons.forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.field === settings.field));
+      button.disabled = !idle;
+    });
+    setText($("value-work"), formatTime(settings.work));
+    setText($("value-rest"), formatTime(settings.rest));
+    roundButtons.forEach((button) => {
+      button.setAttribute("aria-pressed", String(Number(button.dataset.rounds) === settings.rounds));
+      button.disabled = !idle;
+    });
+    const value = settings[fieldName()];
+    keys.forEach((key) => { key.disabled = !idle || value >= MAX_TIME; });
+
+    setText($("start"), primaryText());
+    $("start").disabled = idle && !canStart();
+    setText($("clear"), idle ? "クリア" : "リセット");
+    $("clear").disabled = state === "running" || (idle && value === 0);
+
+    if (reducedMotion) {
+      smokeLevel = state === "running" ? 1 : 0;
+      drawSmoke(0);
+    }
+    measure();
+  }
+
+  /* ---- 線香の長さは下の帯の高さに合わせる ---- */
+  let roomSize = "";
+
+  function measure() {
+    const root = document.documentElement.style;
+    const room = $("room").offsetHeight;
+    const foot = $("panel").offsetHeight;
+    root.setProperty("--foot", foot + "px");
+    root.setProperty("--room", room + "px");
+    const size = `${smoke.clientWidth}x${smoke.clientHeight}`;
+    if (size !== roomSize) {
+      roomSize = size;
+      sizeSmoke();
+      if (reducedMotion) drawSmoke(0);
+    }
+  }
+
+  /* ---- 操作 ---- */
+  $("start").addEventListener("click", pressStart);
+  $("clear").addEventListener("click", clearOrReset);
+
+  keys.forEach((key) => key.addEventListener("click", () => {
+    if (state !== "idle") return;
+    const name = fieldName();
+    settings[name] = Math.min(MAX_TIME, settings[name] + Number(key.dataset.add));
+    saveSettings();
+    render();
+  }));
+  toolTabs.forEach((tab) => tab.addEventListener("click", () => {
+    settings.tool = tab.dataset.tool;
+    saveSettings();
+    render();
+  }));
+  fieldButtons.forEach((button) => button.addEventListener("click", () => {
+    settings.field = button.dataset.field;
+    saveSettings();
+    render();
+  }));
+  roundButtons.forEach((button) => button.addEventListener("click", () => {
+    settings.rounds = Number(button.dataset.rounds);
+    saveSettings();
+    render();
+  }));
+
+  ["pointermove", "pointerdown", "keydown", "focusin"].forEach((type) =>
+    window.addEventListener(type, wake, { passive: true }));
+  window.addEventListener("resize", measure);
+  document.addEventListener("visibilitychange", () => {
+    if (state !== "running" || document.visibilityState !== "visible") return;
+    holdScreen();
+    tick();
+  });
+
+  loadSettings();
+  render();
+</script>
+</body>
+</html>
